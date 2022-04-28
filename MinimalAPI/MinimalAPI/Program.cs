@@ -1,11 +1,15 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
+var conn_string = builder.Configuration.GetConnectionString("Sqlite");
+
+builder.Services.AddDbContext<TodoDbContext>(option =>
+    option.UseSqlite(conn_string));
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-
-builder.Services.AddSingleton<TodoRepo>();
 
 var app = builder.Build();
 
@@ -16,77 +20,78 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.MapGet("/Items", ([FromServices] TodoRepo repo) =>
+app.MapGet("/Items", async (TodoDbContext db) =>
 {
-    return repo.GetALL();
-});
+    return await db.TodoItems.ToListAsync();
+})
+    .WithName("Get_All_TODO's");
 
-app.MapGet("/Items/{id}", ([FromServices] TodoRepo repo, int id) =>
+app.MapGet("/Items/{id}", async (TodoDbContext db, int id) =>
 {
-    var item = repo.GetById(id);
+    var item = await db.TodoItems.FirstOrDefaultAsync(x => x.Id == id);
     return item is not null ? Results.Ok(item) : Results.NotFound();
-});
+})
+    .WithName("Get_TODO_By_ID");
 
-app.MapPost("/Items", ([FromServices] TodoRepo repo, Todo item) =>
+app.MapPost("/Items", async (TodoDbContext db, Todo item) =>
 {
-    if (repo.GetById(item.Id) is not null)
+    if (db.TodoItems.FirstOrDefault(x=> x.Id == item.Id) is not null)
     {
         return Results.BadRequest();
     }
-    repo.AddItem(item);
+    db.TodoItems.Add(item);
+    await db.SaveChangesAsync();
     return Results.Created($"/Items/{item.Id}", item);
-});
+})
+    .WithName("Add_New_TODO");
 
-app.MapPut("/Items/{id}", ([FromServices] TodoRepo repo, int id, Todo item) =>
+app.MapPut("/Items/{id}", async (TodoDbContext db, int id, Todo item) =>
 {
-    if (repo.GetById(id) is null)
+    var existeditem = await db.TodoItems.FirstOrDefaultAsync(x => x.Id == item.Id);
+    if (existeditem is null)
     {
         return Results.NotFound();
     }
-    repo.UpdateItem(item);
+    existeditem.Title = item.Title;
+    existeditem.IsCompleted = item.IsCompleted;
+
+    await db.SaveChangesAsync();
     return Results.Ok(item);
 });
 
-app.MapDelete("Items/{id}", ([FromServices] TodoRepo repo, int id) =>
+app.MapDelete("Items/{id}", async (TodoDbContext db, int id) =>
 {
-    if (repo.GetById(id) is null)
+    var todo = await db.TodoItems.FirstOrDefaultAsync(x => x.Id == id);
+    if (todo is null)
     {
         return Results.NotFound();
     }
 
-    repo.RemoveItem(id);
+    db.TodoItems.Remove(todo);
+    await db.SaveChangesAsync();
     return Results.NoContent();
-});
+})
+    .WithName("Delete_By_ID");
 
 app.UseHttpsRedirection();
 
 app.Run();
 
-class TodoRepo
+class TodoDbContext : DbContext
 {
-    private Dictionary<int, Todo> _items = new Dictionary<int, Todo>();
-    public TodoRepo()
+    public TodoDbContext(DbContextOptions<TodoDbContext> options)
+        : base(options)
     {
-        _items.Add(1, new Todo(1, "Wake up at 10", false));
-        _items.Add(2, new Todo(2, "Take shower", false));
-        _items.Add(3, new Todo(3, "Check Fuel", false));
-        _items.Add(4, new Todo(4, "Get in office", false));
+
     }
+    public DbSet<Todo> TodoItems { get; set; }
 
-    public int Count => _items.Count;
-    public IEnumerable<Todo> GetALL() => _items.Values.ToList();
-
-    public Todo? GetById(int id)
-    {
-        if (_items.ContainsKey(id))
-        {
-            return _items[id];
-        }
-        return null;
-    }
-
-    public void AddItem(Todo item) => _items.Add(item.Id, item);
-    public void UpdateItem(Todo item) => _items[item.Id] = item;
-    public void RemoveItem(int id) => _items.Remove(id);
 }
-internal record Todo(int Id, string Title, bool IsCompleted);
+
+class Todo
+{
+    public int Id { get; set; }
+    public string Title { get; set; }
+    public bool IsCompleted { get; set; }
+}
+
